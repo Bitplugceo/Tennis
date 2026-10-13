@@ -1,3 +1,4 @@
+S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3451,7 +3452,7 @@ body.dark-mode .tracker-analytics-section-head {
   /* FIX #4: COSMETIC CLIENT-SIDE GATE — NOT ACCESS CONTROL. The salted hash, the salt and the unlock flag
      all live in this page/localStorage; anyone with the file can bypass or brute-force it. It is only a
      privacy screen against casual shoulder-surfing. Do not rely on it to protect the engine. */
-  const ENGINE_LOCK_PIN_HASH = "1c2afd6944dce91e26f8bb99ecac63414e8c6bcda2a4ab5a907732fa9a23dee9";
+  const ENGINE_LOCK_PIN_HASH = "dd48142224744f9a90cbc1bafbdfded20bb42eb14a99397a770832a74e38cd71";
   const ENGINE_LOCK_SALT = "tn_engine_lock_v1";
   const overlay = document.getElementById("engineLockOverlay");
   const LOCKOUT_KEY = "engineLockFails";
@@ -3651,7 +3652,7 @@ const TN_CONFIG = Object.freeze({
   lastN: 20, minGames: 5,
   /* walk-forward (120 days, tennis_backtest.md): game-share strength with 4-match shrink, hold base from the category games-per-set,
      projection pulled 60% of the way from the category median, +0.5 total bias (side balance), qualifying -0.5 */
-  n0: 4, k1: 1.0, opp: 0.85, h2hK: 8, ratingMinN: 5, suspPlayer: 3.0, suspTotal: 5.0, leanPlayer: true, alpha: 0.6, biasTotal: 0.5, qualAdj: -0.5, b3: 0.5,
+  n0: 4, k1: 1.0, opp: 0.85, h2hK: 8, ratingMinN: 5, leanPlayer: false, alpha: 0.6, biasTotal: 0.5, qualAdj: -0.5, b3: 0.5,
   sanityCapTotal: 8, sanityCapPlayer: 5, sanityCapSets: 1.0,
   maxPairPicksPerDay: 1,
 });
@@ -4097,8 +4098,6 @@ function evaluate(mk, C, model, line, ctx) {
   if (Math.abs(edge) < minEdge) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: `Below ${C.cat} threshold: edge ${fmt1(edge)} (need ±${minEdge}).` });
   if (isFiniteVal(pSide) && pSide <= 0.5) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: `Edge ${fmt1(edge)} but the full distribution gives only ${fmtPct(pSide)} for ${side} (bimodal 2-set/3-set total).` });
   if (ctx.blockReason) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: ctx.blockReason });
-  const susp = mk === "tg" ? TN_CONFIG.suspTotal : mk === "pa" || mk === "pb" ? TN_CONFIG.suspPlayer : Infinity;
-  if (Math.abs(edge) > susp) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", suspicious: true, reason: `Suspicious edge ${fmt1(edge)} (> ±${susp}): SportyBet's line disagrees with the model by more than real-line evidence supports (likely information the model lacks, e.g. strength gap, injury, surface). Logged for validation, not played.` });
   const grade = Math.abs(edge) >= minEdge * 1.5 ? "A" : Math.abs(edge) >= minEdge * 1.25 ? "B" : "C";
   if ((mk === "pa" || mk === "pb") && TN_CONFIG.leanPlayer) return Object.assign(base, { pick: "LEAN " + side + " " + line, side, pSide, grade, lean: true, reason: `LEAN (not counted in W/L until player-games real-line hit rate is proven): projection ${fmt1(proj)} vs line ${line} (edge ${fmt1(edge)}, need ±${minEdge}; P(${side}) ${fmtPct(pSide)}).` });
   return Object.assign(base, { pick: side + " " + line, side, pSide, grade, reason: `${side}: projection ${fmt1(proj)} vs line ${line} (edge ${fmt1(edge)}, need ±${minEdge}; P(${side}) ${fmtPct(pSide)}).` });
@@ -4154,7 +4153,7 @@ function explainDetails(p, C, nameA, nameB) {
 
 function renderRows(table, rows, lg, nameA, nameB, L) {
   const toTrack = [];
-  /* 🔒 lock = the single strongest qualifying pick (grade, then edge ÷ threshold); never a LEAN or suspicious pick */
+  /* 🔒 lock = the single strongest qualifying pick (grade, then edge ÷ threshold); never a LEAN pick (LEAN is off by default) */
   const gr = { A: 3, B: 2, C: 1 }; let lock = null;
   rows.forEach((p) => { if (p.pick === "NO PLAY" || p.lean || p.suspicious) return; const thr = effectiveEdge(L, p.marketKey) || 1; const sc = (gr[p.grade] || 0) * 100 + Math.abs(p.edge) / thr; if (!lock || sc > lock.sc) lock = { p, sc }; });
   rows.forEach((p) => {
@@ -4209,17 +4208,19 @@ function settlePick(p, r) { /* r must be a finishMatch()-validated final */
    line was already passed wins; everything else is VOID. Walkover / cancelled = VOID. */
 function settleRetired(p, part) { const a = actualOf(p.marketKey, part); if (isFiniteVal(a) && a > p.line) { p.actual = a; p.resultStatus = p.side === "OVER" ? "win" : "loss"; } else { p.resultStatus = "void"; p.actual = NaNv; } p.settledAt = Date.now(); p.settledBy = "retirement rule"; return true; }
 async function autoSettle(force) {
-  const pend = g_tracker.picks.filter((p) => p.resultStatus === "pending" && Date.now() > p.eventDate + (force ? 30 : 60) * 60000); if (!pend.length) return;
+  g_tracker.picks.forEach((p) => { if (p.settledBy === "live (line passed)" && !p.finalAt && p.awaitFinal === undefined) p.awaitFinal = true; }); /* picks early-settled by older builds also get their final number */
+  const pend = g_tracker.picks.filter((p) => (p.resultStatus === "pending" || p.awaitFinal) && Date.now() > p.eventDate + (force ? 30 : 60) * 60000); if (!pend.length) return;
   let changed = false;
   try { const r = await fetch(TN_WORKER_URL + "/tn/picks?since=" + (Date.now() - 30 * 86400000)); const j = await r.json(); const m = new Map(((j && j.rows) || []).map((x) => [x.sig, x]));
-    pend.forEach((p) => { const x = m.get(p.signature); if (x && x.status && x.status !== "pending") { p.resultStatus = x.status; p.actual = isFiniteVal(x.actual) ? x.actual : NaNv; p.settledAt = Date.now(); p.settledBy = "worker"; changed = true; } });
+    pend.forEach((p) => { const x = m.get(p.signature); if (x && p.awaitFinal && x.status && x.status !== "pending" && isFiniteVal(x.actual)) /* worker only settles from finals */ { finalizeEarly(p, x.actual, "worker"); changed = true; return; } if (p.awaitFinal) return; if (x && x.status && x.status !== "pending") { p.resultStatus = x.status; p.actual = isFiniteVal(x.actual) ? x.actual : NaNv; p.settledAt = Date.now(); p.settledBy = "worker"; changed = true; } });
   } catch (e) { reportSoftFailure("worker-settle", e); }
-  for (const p of pend.filter((x) => x.resultStatus === "pending")) {
+  for (const p of pend.filter((x) => x.resultStatus === "pending" || x.awaitFinal)) {
     try { let found = false;
       for (let page = 1; page <= 20 && !found; page++) {
         const day = await sportyTN("results?start=" + (p.eventDate - 60 * 60000) + "&end=" + (p.eventDate + 8 * 3600000) + "&page=" + page, 120000);
         (day.tournaments || []).forEach((t) => (t.events || []).forEach((e) => { if (e.eventId !== p.eventId) return; found = true; const st = String(e.matchStatus || "");
-          if (/cancel|walkover|abandon|postpon/i.test(st)) { p.resultStatus = "void"; p.settledAt = Date.now(); changed = true; }
+          if (p.awaitFinal) { const fin = /cancel|walkover|abandon|postpon|retired/i.test(st) ? partialScore(e) : fromSporty(e); if (fin) { finalizeEarly(p, actualOf(p.marketKey, fin), /retired|abandon|cancel/i.test(st) ? "stoppage (decided bet stands)" : "final"); changed = true; } }
+          else if (/cancel|walkover|abandon|postpon/i.test(st)) { p.resultStatus = "void"; p.settledAt = Date.now(); changed = true; }
           else if (/retired/i.test(st)) { settleRetired(p, partialScore(e)); changed = true; }
           else { const r = fromSporty(e); if (r && settlePick(p, r)) changed = true; else engineDebug("auto-settle: no valid final score yet for " + p.eventId + " — left pending"); } }));
         if (page * 100 >= (day.totalNum || 0)) break;
@@ -4246,18 +4247,23 @@ function tnParseLive(e) {
   const set = m ? Number(m[1]) : gs.length; const cur = gs.length ? gs[gs.length - 1] : null;
   return { set, sets: ss.length === 2 && ss.every(Number.isFinite) ? ss : null, games: gs, cur, pscore: /^\d+:\d+$|^[0-9A]+:[0-9A]+$/.test(String(e.pointScore || "")) ? String(e.pointScore).replace(":", "-") : "", statusName: st, capturedAt: Date.now() };
 }
+function tnLivePart(info) { return { total: info.games.reduce((s, x) => s + x[0] + x[1], 0), gA: info.games.reduce((s, x) => s + x[0], 0), gB: info.games.reduce((s, x) => s + x[1], 0), nsets: info.games.length }; }
+/* An early-settled OVER (awaitFinal) keeps status WIN; at full time its number is replaced by the final value. If the match is later retired /
+   abandoned, the bet was already decided so it stands (WIN) and the number at the stoppage is kept. */
+function finalizeEarly(p, actual, how) { if (isFiniteVal(actual) && actual > 0) p.actual = actual; p.awaitFinal = false; p.finalAt = Date.now(); p.finalBy = how; return true; }
 /* OVER picks already decided in play (total / player games passed the line) settle as wins immediately; everything else waits for the final */
 function tnSettleLiveDecided(p, info) {
-  if (p.resultStatus !== "pending" || p.side !== "OVER") return false;
-  const part = { total: info.games.reduce((s, x) => s + x[0] + x[1], 0), gA: info.games.reduce((s, x) => s + x[0], 0), gB: info.games.reduce((s, x) => s + x[1], 0), nsets: info.games.length };
-  const a = actualOf(p.marketKey, part); if (!(a > p.line)) return false;
-  p.resultStatus = "win"; p.actual = a; p.settledAt = Date.now(); p.settledBy = "live (line passed)"; return true;
+  if (p.awaitFinal && p.resultStatus === "win") { const a2 = actualOf(p.marketKey, tnLivePart(info)); if (isFiniteVal(a2) && a2 > p.actual) { p.actual = a2; return true; } return false; } /* keep following: number moves to the latest */
+  if (p.resultStatus !== "pending" || p.side !== "OVER") return false; /* UNDER is never settled early */
+  if (p.marketKey === "ts" && !(info.games.length >= 3 && info.set >= 3)) return false; /* Sets OVER 2.5 only once set 3 has started */
+  const a = actualOf(p.marketKey, tnLivePart(info)); if (!(a > p.line)) return false;
+  p.resultStatus = "win"; p.actual = a; p.settledAt = Date.now(); p.settledBy = "live (line passed)"; p.awaitFinal = true; return true;
 }
 async function _pollLiveGameClocksImpl() {
   if (_liveClockPollInFlight) return; _liveClockPollInFlight = true;
   try {
     const now = Date.now();
-    const pend = g_tracker.picks.filter((p) => p.eventId && p.resultStatus === "pending" && now >= p.eventDate - 10 * 60000 && now < p.eventDate + 8 * 3600000);
+    const pend = g_tracker.picks.filter((p) => p.eventId && (p.resultStatus === "pending" || p.awaitFinal) && now >= p.eventDate - 10 * 60000 && now < p.eventDate + 8 * 3600000);
     if (!pend.length) { if (g_liveGameStatus.size) { g_liveGameStatus.clear(); renderTracker(); } stopLiveClockTicker(); return; }
     let didChange = false, settled = false, ended = false;
     const d = await fetchJson(TN_WORKER_URL + "/sporty/live?_=" + Date.now(), "SportyBet live", 1, 8000).then((j) => { if (!j || j.bizCode !== 10000) throw new Error("SportyBet live bad response"); return j.data; });
@@ -4342,7 +4348,7 @@ async function pullWorkerPicks() {
     const have = new Map(g_tracker.picks.map((p) => [p.signature, p])); let added = 0, upd = 0;
     (j.rows || []).forEach((x) => {
       const ex = have.get(x.sig);
-      if (ex) { if (ex.resultStatus === "pending" && x.status && x.status !== "pending") { ex.resultStatus = x.status; ex.actual = isFiniteVal(x.actual) ? x.actual : NaNv; ex.settledAt = x.settled || Date.now(); ex.settledBy = "worker"; upd++; } return; }
+      if (ex) { if (ex.awaitFinal && x.status && x.status !== "pending" && isFiniteVal(x.actual)) { finalizeEarly(ex, x.actual, "worker"); upd++; return; } if (ex.resultStatus === "pending" && x.status && x.status !== "pending") { ex.resultStatus = x.status; ex.actual = isFiniteVal(x.actual) ? x.actual : NaNv; ex.settledAt = x.settled || Date.now(); ex.settledBy = "worker"; upd++; } return; }
       if (!x.p) return; g_tracker.picks.push(Object.assign({}, x.p, { resultStatus: x.status || "pending", actual: isFiniteVal(x.actual) ? x.actual : NaNv, synced: true })); added++;
     });
     if (added || upd) { g_tracker.picks.sort((a, b) => b.eventDate - a.eventDate); trackerSave(); renderTracker(); }
