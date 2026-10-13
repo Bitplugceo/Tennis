@@ -1,4 +1,3 @@
-S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4207,6 +4206,27 @@ function settlePick(p, r) { /* r must be a finishMatch()-validated final */
 /* retirement (Betradar-standard rule SportyBet uses; its own rules page could not be fetched): bets stand only if already decided — an OVER whose
    line was already passed wins; everything else is VOID. Walkover / cancelled = VOID. */
 function settleRetired(p, part) { const a = actualOf(p.marketKey, part); if (isFiniteVal(a) && a > p.line) { p.actual = a; p.resultStatus = p.side === "OVER" ? "win" : "loss"; } else { p.resultStatus = "void"; p.actual = NaNv; } p.settledAt = Date.now(); p.settledBy = "retirement rule"; return true; }
+/* FAST final source: Sportradar match_info (the feed SportyBet itself is settled from) is "Ended" within ~1 min, while SportyBet's results list
+   lags by hours. Cross-check: the set count from the periods must agree with Sportradar's own sets-won result and winner. */
+async function srFinal(eventId) {
+  const id = String(eventId).replace(/^sr:match:/, ""); if (!/^\d+$/.test(id)) return null;
+  const d = await gismo("match_info/" + id, 0); const m = d && d.match; if (!m || !m.status) return null;
+  const name = String(m.status.name || ""), sid = Number(m.status._id);
+  const per = m.periods || {}; const sets = Object.keys(per).filter((k) => /^p\d$/.test(k)).sort().map((k) => [Number(per[k].home), Number(per[k].away)]).filter((x) => x.every(Number.isFinite));
+  const r = { sets, total: sets.reduce((a, x) => a + x[0] + x[1], 0), gA: sets.reduce((a, x) => a + x[0], 0), gB: sets.reduce((a, x) => a + x[1], 0), nsets: sets.length };
+  if (/walkover|cancel|abandon|postpon/i.test(name)) return { kind: "void", r, name };
+  if (/retire|defaulted/i.test(name)) return { kind: "retired", r, name };
+  if (sid !== 100 && !/^ended$/i.test(name)) return null;
+  const res = m.result || {}; const wonA = sets.filter((x) => x[0] > x[1]).length, wonB = sets.filter((x) => x[1] > x[0]).length;
+  if (!sets.length || wonA !== Number(res.home) || wonB !== Number(res.away) || (res.winner && res.winner !== (wonA > wonB ? "home" : "away"))) { engineDebug("srFinal cross-check failed " + eventId, { per, res }); return null; }
+  return { kind: "final", r, name };
+}
+function applyFinal(p, f) {
+  if (p.awaitFinal) return finalizeEarly(p, actualOf(p.marketKey, f.r), f.kind === "final" ? "final (Sportradar)" : "stoppage (decided bet stands)");
+  if (f.kind === "void") { p.resultStatus = "void"; p.actual = NaNv; p.settledAt = Date.now(); p.settledBy = "Sportradar " + f.name; return true; }
+  if (f.kind === "retired") return settleRetired(p, f.r);
+  const ok = settlePick(p, f.r); if (ok) p.settledBy = "final (Sportradar)"; return ok;
+}
 async function autoSettle(force) {
   g_tracker.picks.forEach((p) => { if (p.settledBy === "live (line passed)" && !p.finalAt && p.awaitFinal === undefined) p.awaitFinal = true; }); /* picks early-settled by older builds also get their final number */
   const pend = g_tracker.picks.filter((p) => (p.resultStatus === "pending" || p.awaitFinal) && Date.now() > p.eventDate + (force ? 30 : 60) * 60000); if (!pend.length) return;
@@ -4216,6 +4236,7 @@ async function autoSettle(force) {
   } catch (e) { reportSoftFailure("worker-settle", e); }
   for (const p of pend.filter((x) => x.resultStatus === "pending" || x.awaitFinal)) {
     try { let found = false;
+      try { const f = await srFinal(p.eventId); if (f && applyFinal(p, f)) { changed = true; continue; } } catch (e) { engineDebug("srFinal miss " + p.eventId, { e: e.message }); }
       for (let page = 1; page <= 20 && !found; page++) {
         const day = await sportyTN("results?start=" + (p.eventDate - 60 * 60000) + "&end=" + (p.eventDate + 8 * 3600000) + "&page=" + page, 120000);
         (day.tournaments || []).forEach((t) => (t.events || []).forEach((e) => { if (e.eventId !== p.eventId) return; found = true; const st = String(e.matchStatus || "");
