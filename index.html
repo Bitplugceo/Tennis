@@ -1,4 +1,3 @@
-S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3210,8 +3209,8 @@ body.dark-mode .tracker-analytics-section-head {
     </h3>
 
     <label id="useGH2HLabel"
-      ><input type="checkbox" id="useGH2H" aria-label="H2H games (shown only, not used by the model)" /> H2H games
-      (shown only, not used by the model; left = Player A (home), right = Player B (away))</label
+      ><input type="checkbox" id="useGH2H" aria-label="H2H games (used with shrinkage)" /> H2H games
+      (auto-ticked when real H2H exists; used with strong shrinkage n/(n+8); left = Player A (home), right = Player B (away))</label
     >
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px">
       <input id="aGH2H" placeholder="Player A (home) games in H2H, newest first" aria-label="Player A (home) games in H2H" />
@@ -3652,7 +3651,7 @@ const TN_CONFIG = Object.freeze({
   lastN: 20, minGames: 5,
   /* walk-forward (120 days, tennis_backtest.md): game-share strength with 4-match shrink, hold base from the category games-per-set,
      projection pulled 60% of the way from the category median, +0.5 total bias (side balance), qualifying -0.5 */
-  n0: 4, k1: 1.0, alpha: 0.6, biasTotal: 0.5, qualAdj: -0.5, b3: 0.5,
+  n0: 4, k1: 1.0, opp: 0.85, h2hK: 8, ratingMinN: 5, suspPlayer: 3.0, suspTotal: 5.0, leanPlayer: true, alpha: 0.6, biasTotal: 0.5, qualAdj: -0.5, b3: 0.5,
   sanityCapTotal: 8, sanityCapPlayer: 5, sanityCapSets: 1.0,
   maxPairPicksPerDay: 1,
 });
@@ -3875,7 +3874,7 @@ function clearInputs() {
   document.querySelectorAll(".section").forEach((sec) => { if (sec.id !== "leagueSection" && sec.id !== "fixtureSection") sec.classList.add("collapsed"); });
   ["fetchStatus", "marketAutoStatus", "last10SeriesAlert"].forEach((id) => setStatus(id, ""));
   const t = document.getElementById("results"); if (t) { t.style.display = "none"; t.innerHTML = "<tr><th>Pick</th><th>Projection</th><th>Edge</th><th>Model Grade</th><th>Prediction</th></tr>"; }
-  AppState.fixture = null; AppState.bo = NaNv; AppState.h2h = null; AppState.lastFetch = null; AppState.sportyEvent = null; AppState.autoLines = {}; AppState.hist = null;
+  AppState.fixture = null; AppState.bo = NaNv; AppState.h2h = null; AppState.ratings = null; AppState.lastFetch = null; AppState.sportyEvent = null; AppState.autoLines = {}; AppState.hist = null;
 }
 async function onLeagueChange() {
   setEngineAlert(false);
@@ -3942,7 +3941,9 @@ async function fetchStats() {
   const f = AppState.fixture && normName(AppState.fixture.home) === normName(A) && normName(AppState.fixture.away) === normName(B) ? AppState.fixture : null;
   fetchSpin("Loading last " + TN_CONFIG.lastN + " matches for " + A + " and " + B + "...");
   try {
-    const [HA, HB] = await Promise.all([loadPlayerHistory(A, f && f.hid), loadPlayerHistory(B, f && f.aid)]);
+    const [HA, HB, RT] = await Promise.all([loadPlayerHistory(A, f && f.hid), loadPlayerHistory(B, f && f.aid), fetchJson(TN_WORKER_URL + "/tn/ratings?names=" + encodeURIComponent(A + "|" + B), "Ratings(worker)", 10 * 60000, 15000).catch((e) => { reportSoftFailure("ratings", e); return null; })]);
+    { const cut = f && isFiniteVal(Number(f.start)) ? Number(f.start) - 600000 : Infinity; HA.list = HA.list.filter((m) => m.t < cut); HB.list = HB.list.filter((m) => m.t < cut); } /* never use the match itself or anything after kickoff */
+    AppState.ratings = RT && RT.rows ? { A: RT.rows[A] || null, B: RT.rows[B] || null, at: RT.at } : null;
     if (stale()) { engineDebug("stats for " + A + " v " + B + " discarded (match changed while loading)"); return; }
     const pa = HA.list.map((m) => playerView(m, A)), pb = HB.list.map((m) => playerView(m, B));
     const now = Date.now();
@@ -3961,9 +3962,10 @@ async function fetchStats() {
     setVal("aGH2H", h2.map((x) => x.gW).join(",")); setVal("bGH2H", h2.map((x) => x.gL).join(","));
     setVal("aSetH2H", h2.map((x) => x.won).join(",")); setVal("bSetH2H", h2.map((x) => x.lost).join(","));
     setTag("h2hAutoTag", h2.length > 0);
+    ["useGH2H", "useSetH2H"].forEach((id) => { const el = document.getElementById(id); if (el) el.checked = h2.length > 0; }); /* real H2H exists → used (shrunk n/(n+8)) */
     AppState.lastFetch = { at: now, league: lg.key, A, B, nA: pa.length, nB: pb.length, nH2H: h2.length };
     const errs = HA.errs.concat(HB.errs); const short = pa.length < TN_CONFIG.minGames || pb.length < TN_CONFIG.minGames;
-    fetchDone((short ? "⚠️ FETCH INCOMPLETE: " + A + " has " + pa.length + ", " + B + " has " + pb.length + " matches (needs " + TN_CONFIG.minGames + " each) → NO PLAY. " : "✅ ") + `${A}: ${pa.length} matches (${HA.src.join(", ") || "none"}) • ${B}: ${pb.length} matches (${HB.src.join(", ") || "none"}) • H2H: ${h2.length} (shown, not used by the model)` + (errs.length ? " • Partial: " + [...new Set(errs.map((x) => x.replace(/\(not JSON.*$/, "(blocked)")))].join("; ") : ""), short);
+    fetchDone((short ? "⚠️ FETCH INCOMPLETE: " + A + " has " + pa.length + ", " + B + " has " + pb.length + " matches (needs " + TN_CONFIG.minGames + " each) → NO PLAY. " : "✅ ") + `${A}: ${pa.length} matches (${HA.src.join(", ") || "none"}) • ${B}: ${pb.length} matches (${HB.src.join(", ") || "none"}) • H2H: ${h2.length}${h2.length ? " (used, shrunk n/(n+" + TN_CONFIG.h2hK + "))" : ""}` + (AppState.ratings && AppState.ratings.A && AppState.ratings.B ? " • Ratings " + AppState.ratings.A[0].toFixed(2) + " v " + AppState.ratings.B[0].toFixed(2) : " • Ratings: NaN (no opponent adjustment)") + (errs.length ? " • Partial: " + [...new Set(errs.map((x) => x.replace(/\(not JSON.*$/, "(blocked)")))].join("; ") : ""), short);
   } catch (e) { fetchDone("❌ Fetch failed: " + (e.message || e) + ". Tap Fetch Stats to retry.", true); }
   finally { btn.disabled = false; }
 }
@@ -4043,7 +4045,14 @@ function computeModel(C, A, B, bo, mtb, qual) {
   const N0 = TN_CONFIG.n0;
   const share = (g) => { const w = g.reduce((s, x) => s + x.gW, 0), l = g.reduce((s, x) => s + x.gL, 0); return (w + N0 * 6) / (w + l + N0 * 12); };
   const sA = share(A.games), sB = share(B.games);
-  const c = cForGps(C.gps), d = TN_CONFIG.k1 * (logit(sA) - logit(sB));
+  const c = cForGps(C.gps); let d = TN_CONFIG.k1 * (logit(sA) - logit(sB)), dSrc = "game share (no opponent adjustment: rating missing)";
+  const R = AppState.ratings; let rA = NaNv, rB = NaNv, h2hTerm = 0, h2hN = 0;
+  if (R && R.A && R.B && R.A[1] >= TN_CONFIG.ratingMinN && R.B[1] >= TN_CONFIG.ratingMinN) { rA = R.A[0]; rB = R.B[0]; d = TN_CONFIG.opp * (rA - rB); dSrc = "opponent-adjusted rating gap " + (rA - rB).toFixed(2); }
+  const useH = (document.getElementById("useGH2H") || {}).checked;
+  if (useH && isFiniteVal(rA) && Array.isArray(AppState.h2h) && AppState.h2h.length) {
+    const res = AppState.h2h.map((m) => Math.log((m.gW + 0.5) / (m.gL + 0.5)) - (rA - rB)); /* A-perspective games, match tiebreak excluded */
+    h2hN = res.length; h2hTerm = TN_CONFIG.opp * res.reduce((s, x) => s + x, 0) / (res.length + TN_CONFIG.h2hK); d += h2hTerm;
+  }
   const pa = Math.round(sigm(c + d) * 100) / 100, pb = Math.round(sigm(c - d) * 100) / 100;
   const mt = Math.round(Math.max(0, Math.min(1, mtb)) * 100) / 100;
   const J = tnJoint(pa, pb, bo, mt);
@@ -4053,7 +4062,7 @@ function computeModel(C, A, B, bo, mtb, qual) {
   const p3raw = bo === 3 ? J.S[3] : NaNv;
   const p3 = bo === 3 ? Math.min(0.95, Math.max(0.02, C.p3 + TN_CONFIG.b3 * (p3raw - C.mp3))) : NaNv;
   const eSets = bo === 3 ? 2 + p3 : J.S.reduce((s, x, i) => s + i * x, 0);
-  return { sA, sB, c, d, pa, pb, mtb: mt, bo, J, shift, proj: { tg: fT + shift, pa: fA + shift / 2, pb: fB + shift / 2, ts: eSets }, raw: { tg: fT, pa: fA, pb: fB, p3: p3raw }, p3 };
+  return { sA, sB, c, d, dSrc, rA, rB, h2hTerm, h2hN, pa, pb, mtb: mt, bo, J, shift, proj: { tg: fT + shift, pa: fA + shift / 2, pb: fB + shift / 2, ts: eSets }, raw: { tg: fT, pa: fA, pb: fB, p3: p3raw }, p3 };
 }
 /* calibrated P(Over line) from the shifted pmf (continuous shift via linear interpolation of the cdf) */
 function pOverShifted(d, line, off) { const y = line - off; const lo = Math.floor(y), f = y - lo; const pAt = (L) => tnPOver(d, L); return pAt(lo) * (1 - f) + pAt(lo + 1) * f; }
@@ -4088,7 +4097,10 @@ function evaluate(mk, C, model, line, ctx) {
   if (Math.abs(edge) < minEdge) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: `Below ${C.cat} threshold: edge ${fmt1(edge)} (need ±${minEdge}).` });
   if (isFiniteVal(pSide) && pSide <= 0.5) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: `Edge ${fmt1(edge)} but the full distribution gives only ${fmtPct(pSide)} for ${side} (bimodal 2-set/3-set total).` });
   if (ctx.blockReason) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", reason: ctx.blockReason });
+  const susp = mk === "tg" ? TN_CONFIG.suspTotal : mk === "pa" || mk === "pb" ? TN_CONFIG.suspPlayer : Infinity;
+  if (Math.abs(edge) > susp) return Object.assign(base, { pick: "NO PLAY", grade: "NaN", suspicious: true, reason: `Suspicious edge ${fmt1(edge)} (> ±${susp}): SportyBet's line disagrees with the model by more than real-line evidence supports (likely information the model lacks, e.g. strength gap, injury, surface). Logged for validation, not played.` });
   const grade = Math.abs(edge) >= minEdge * 1.5 ? "A" : Math.abs(edge) >= minEdge * 1.25 ? "B" : "C";
+  if ((mk === "pa" || mk === "pb") && TN_CONFIG.leanPlayer) return Object.assign(base, { pick: "LEAN " + side + " " + line, side, pSide, grade, lean: true, reason: `LEAN (not counted in W/L until player-games real-line hit rate is proven): projection ${fmt1(proj)} vs line ${line} (edge ${fmt1(edge)}, need ±${minEdge}; P(${side}) ${fmtPct(pSide)}).` });
   return Object.assign(base, { pick: side + " " + line, side, pSide, grade, reason: `${side}: projection ${fmt1(proj)} vs line ${line} (edge ${fmt1(edge)}, need ±${minEdge}; P(${side}) ${fmtPct(pSide)}).` });
 }
 function runEngine() {
@@ -4132,6 +4144,7 @@ function explainDetails(p, C, nameA, nameB) {
   const m = p.model; const lines = [p.reason];
   if (m) {
     lines.push(`Game share (last ${TN_CONFIG.lastN}, shrunk): ${nameA} ${fmtPct(m.sA)} vs ${nameB} ${fmtPct(m.sB)} → hold ${nameA} ${fmtPct(m.pa)}, ${nameB} ${fmtPct(m.pb)} (category base ${fmtPct(sigm(m.c))}).`);
+    lines.push(`Strength: ${m.dSrc}${isFiniteVal(m.rA) ? ` (${nameA} ${m.rA.toFixed(2)}, ${nameB} ${m.rB.toFixed(2)}; × ${TN_CONFIG.opp})` : ""}${m.h2hN ? `; H2H ${m.h2hN} meeting(s) add ${m.h2hTerm >= 0 ? "+" : ""}${m.h2hTerm.toFixed(3)} (shrunk n/(n+${TN_CONFIG.h2hK}))` : ""}.`);
     lines.push(`Exact joint distribution (best of ${m.bo}, match-tiebreak rate ${fmtPct(m.mtb)}): raw fair total ${fmt1(m.raw.tg)}, ${nameA} ${fmt1(m.raw.pa)}, ${nameB} ${fmt1(m.raw.pb)}; pulled toward the ${C ? C.cat : "NaN"} median by ${fmt1(m.shift)} games.`);
     lines.push(`P(deciding set): model ${fmtPct(m.raw.p3)}, calibrated ${fmtPct(m.p3)} (category ${C ? fmtPct(C.p3) : "NaN"}).`);
   }
@@ -4141,24 +4154,31 @@ function explainDetails(p, C, nameA, nameB) {
 
 function renderRows(table, rows, lg, nameA, nameB, L) {
   const toTrack = [];
+  /* 🔒 lock = the single strongest qualifying pick (grade, then edge ÷ threshold); never a LEAN or suspicious pick */
+  const gr = { A: 3, B: 2, C: 1 }; let lock = null;
+  rows.forEach((p) => { if (p.pick === "NO PLAY" || p.lean || p.suspicious) return; const thr = effectiveEdge(L, p.marketKey) || 1; const sc = (gr[p.grade] || 0) * 100 + Math.abs(p.edge) / thr; if (!lock || sc > lock.sc) lock = { p, sc }; });
   rows.forEach((p) => {
-    const isNo = p.pick === "NO PLAY"; const row = table.insertRow();
+    const isNo = p.pick === "NO PLAY"; const row = table.insertRow(); const isLock = !!(lock && lock.p === p); p.isLock = isLock;
     const td1 = document.createElement("td"); td1.textContent = p.name + (isFiniteVal(p.line) ? " " + p.line : ""); row.appendChild(td1);
     const td2 = document.createElement("td"); td2.textContent = fmt1(p.proj); row.appendChild(td2);
     const td3 = document.createElement("td"); td3.textContent = isFiniteVal(p.edge) && isFiniteVal(p.line) ? (p.edge > 0 ? "+" : "") + (Math.round(p.edge * 10) / 10).toFixed(1) : "NaN"; row.appendChild(td3);
     const td4 = document.createElement("td"); td4.className = isNo ? "conf-none" : "conf-" + p.grade.toLowerCase(); td4.textContent = isNo ? "NaN" : p.grade; row.appendChild(td4);
-    const td5 = document.createElement("td"); td5.className = isNo ? "pred-noplay" : p.side === "UNDER" ? "pred-under" : "pred-over"; td5.style.whiteSpace = "nowrap"; td5.style.fontSize = "11px"; if (isNo) td5.style.opacity = "0.85";
+    const td5 = document.createElement("td"); td5.className = isNo ? "pred-noplay" : p.side === "UNDER" ? "pred-under" : "pred-over"; td5.style.whiteSpace = "nowrap"; td5.style.fontSize = "11px"; if (isNo || p.lean) td5.style.opacity = "0.85";
     const wrap = document.createElement("div"); wrap.style.display = "inline-block"; const sp = document.createElement("span"); sp.textContent = isNo ? "NO PLAY \u24d8" : p.pick; sp.style.cursor = "pointer";
+    if (isLock) { const ls = document.createElement("span"); ls.className = "lock"; ls.textContent = "🔒"; sp.appendChild(document.createTextNode(" ")); sp.appendChild(ls); }
     const det = explainDetails(p, L, nameA, nameB); det.open = false; sp.addEventListener("click", (e) => { e.stopPropagation(); det.open = !det.open; });
-    wrap.appendChild(sp); wrap.appendChild(det); td5.appendChild(wrap); td5.title = p.reason; row.appendChild(td5);
+    wrap.appendChild(sp); wrap.appendChild(det); td5.appendChild(wrap); td5.title = (isLock ? "🔒 Lock pick: strongest qualifying pick of this match. " : "") + p.reason; row.appendChild(td5);
     if (!isNo) toTrack.push(p);
   });
   if (toTrack.length && lg) trackPicks(toTrack, lg, nameA, nameB);
 }
+/* LEAN picks are tracked and settled but never counted as W/L: their result is stored as lean-win / lean-loss / lean-push */
+function leanFix(p) { if (p && p.lean && /^(win|loss|push)$/.test(String(p.resultStatus || ""))) p.resultStatus = "lean-" + p.resultStatus; }
+
 /* ---------------- tracker ---------------- */
 let g_tracker = { picks: [] };
 function trackerLoad() { try { setTimeout(() => { const st = g_tracker.picks.reduce((o, p) => { o[p.resultStatus] = (o[p.resultStatus] || 0) + 1; return o; }, {}); engineDebug("hydrate state snapshot", { local: { totalCount: g_tracker.picks.length, pending: st.pending || 0, wins: st.win || 0, losses: st.loss || 0, pushes: st.push || 0 } }); }, 0); const j = JSON.parse(localStorage.getItem(TRACKER_KEY) || "null"); g_tracker = j && Array.isArray(j.picks) ? j : { picks: [] }; } catch (_e) { g_tracker = { picks: [] }; } }
-function trackerSave() { trackerDebug("tracker save", { picks: g_tracker.picks.length, testMode: !!TN_TEST_MODE }); if (TN_TEST_MODE) return; try { localStorage.setItem(TRACKER_KEY, JSON.stringify(g_tracker)); } catch (e) { addIssue("Tracker save failed: " + e.message); } }
+function trackerSave() { g_tracker.picks.forEach(leanFix); trackerDebug("tracker save", { picks: g_tracker.picks.length, testMode: !!TN_TEST_MODE }); if (TN_TEST_MODE) return; try { localStorage.setItem(TRACKER_KEY, JSON.stringify(g_tracker)); } catch (e) { addIssue("Tracker save failed: " + e.message); } }
 function watDayKey(ms) { return Math.floor((ms + 3600000) / 86400000); }
 function trackerCorrelationBlock(lg, A, B) {
   const today = watDayKey(Date.now()); const pair = [normName(A), normName(B)].sort().join("|"); const out = {};
@@ -4169,7 +4189,7 @@ function trackPicks(list, lg, A, B) {
   const f = AppState.fixture; if (!f || !f.eventId) { addIssue("Pick not tracked: no SportyBet fixture selected (manual entries are not tracked)."); return; }
   list.forEach((p) => {
     const sig = f.eventId + "|" + p.marketKey; if (g_tracker.picks.some((x) => x.signature === sig)) return;
-    g_tracker.picks.unshift({ signature: sig, eventId: f.eventId, leagueKey: lg.key, league: lg.name, cat: lg.cat, bo: AppState.bo, homeTeam: A, awayTeam: B, pairKey: [normName(A), normName(B)].sort().join("|"), eventDate: f.start, createdAt: Date.now(), marketKey: p.marketKey, mv: TN_BUILD, market: p.name, line: p.line, side: p.side, pick: p.pick, grade: p.grade, proj: Math.round(p.proj * 10) / 10, edge: Math.round(p.edge * 10) / 10, prob: isFiniteVal(p.pSide) ? Math.round(p.pSide * 1000) / 1000 : NaNv, resultStatus: "pending", actual: NaNv, build: TN_BUILD });
+    g_tracker.picks.unshift({ signature: sig, eventId: f.eventId, leagueKey: lg.key, league: lg.name, cat: lg.cat, bo: AppState.bo, homeTeam: A, awayTeam: B, pairKey: [normName(A), normName(B)].sort().join("|"), eventDate: f.start, createdAt: Date.now(), marketKey: p.marketKey, mv: TN_BUILD, market: p.name, line: p.line, side: p.side, pick: p.pick, grade: p.grade, lean: !!p.lean, isLock: !!p.isLock, proj: Math.round(p.proj * 10) / 10, edge: Math.round(p.edge * 10) / 10, prob: isFiniteVal(p.pSide) ? Math.round(p.pSide * 1000) / 1000 : NaNv, resultStatus: "pending", actual: NaNv, build: TN_BUILD });
   });
   trackerSave(); renderTracker(); syncPicksToWorker();
 }
