@@ -1,3 +1,4 @@
+S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -514,6 +515,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.fetch-btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .fetch-btn {
   background: #49a443 !important;
   color: #fff !important;
@@ -3029,7 +3031,7 @@ body.dark-mode .tracker-analytics-section-head {
   </div>
 
 
-  <div class="section" id="fixtureSection" style="display: none">
+  <div class="section" id="fixtureSection">
     <h3>
       ⚡ Auto-Fetch
       <span style="font-size: 11px; color: #aaa"
@@ -3142,9 +3144,9 @@ body.dark-mode .tracker-analytics-section-head {
     <div id="aXtSection">
       <div class="market-history-block">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-          <div><label id="aXtTbLabel">Tiebreaks</label><input id="aXtTb" placeholder="0,1,0,2,0" aria-label="Tiebreaks" /></div>
+          <div style="display:none"><label id="aXtTbLabel">Tiebreaks</label><input id="aXtTb" placeholder="0,1,0,2,0" aria-label="Tiebreaks" /></div>
           <div><label>Total Games</label><input id="aXtTot" placeholder="19,21,22,19,17,18,24,20,22,18" aria-label="Total Games" /></div>
-          <div><label for="aXtMtbHome">Match Tiebreaks</label><input id="aXtMtbHome" placeholder="0,0,1,0,0" aria-label="Match Tiebreaks" /></div>
+          <div style="display:none"><label for="aXtMtbHome">Match Tiebreaks</label><input id="aXtMtbHome" placeholder="0,0,1,0,0" aria-label="Match Tiebreaks" /></div>
           <div><label for="aXtDaysHome">Days Ago</label><input id="aXtDaysHome" placeholder="0,0,0,1,1" aria-label="Days Ago" /></div>
         </div>
       </div>
@@ -3176,9 +3178,9 @@ body.dark-mode .tracker-analytics-section-head {
     <div id="bXtSection">
       <div class="market-history-block">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-          <div><label id="bXtTbLabel">Tiebreaks</label><input id="bXtTb" placeholder="0,1,0,2,0" aria-label="Tiebreaks" /></div>
+          <div style="display:none"><label id="bXtTbLabel">Tiebreaks</label><input id="bXtTb" placeholder="0,1,0,2,0" aria-label="Tiebreaks" /></div>
           <div><label>Total Games</label><input id="bXtTot" placeholder="19,21,22,19,17,18,24,20,22,18" aria-label="Total Games" /></div>
-          <div><label for="bXtMtbAway">Match Tiebreaks</label><input id="bXtMtbAway" placeholder="0,0,1,0,0" aria-label="Match Tiebreaks" /></div>
+          <div style="display:none"><label for="bXtMtbAway">Match Tiebreaks</label><input id="bXtMtbAway" placeholder="0,0,1,0,0" aria-label="Match Tiebreaks" /></div>
           <div><label for="bXtDaysAway">Days Ago</label><input id="bXtDaysAway" placeholder="0,0,0,1,1" aria-label="Days Ago" /></div>
         </div>
       </div>
@@ -3872,7 +3874,7 @@ function tnFreshRestore() {
     if (x.st == null) el.removeAttribute("style"); else if (el.getAttribute("style") !== x.st) el.setAttribute("style", x.st);
     el.disabled = x.dis; el.hidden = x.hid;
   });
-  const fs = document.getElementById("fixtureSection"); if (fs) { if (curLeague()) fs.style.display = ""; else fs.setAttribute("style", "display: none"); } /* Auto-Fetch stays visible while a league is picked  */
+  const fs = document.getElementById("fixtureSection"); if (fs) { fs.style.display = ""; } /* Auto-Fetch is always visible (basketball homepage) */
   updateSectionLocks();
 }
 function clearInputs() {
@@ -3896,9 +3898,9 @@ async function onLeagueChange() {
   const fs = document.getElementById("fixtureSelect"); if (fs) fs.innerHTML = '<option value="">- Select match -</option>';
   document.querySelectorAll(".section").forEach((s) => { s.classList.add("collapsed"); s.classList.remove("locked"); });
   const lg = curLeague();
-  const fx = document.getElementById("fixtureSection"); if (fx) fx.style.display = lg ? "" : "none";
-  updateSectionLocks();
-  if (lg) { AppState.bo = defaultBo(lg); accordionOpen("fixtureSection"); const g = window.__tnMatchGen; await tnBlankHold(); if (g === window.__tnMatchGen && curLeague() === lg) loadFixtures(0); } else accordionOpen("leagueSection");
+  const fx = document.getElementById("fixtureSection"); if (fx) fx.style.display = "";
+  updateSectionLocks(); tnSyncFetchBtn();
+  AppState.bo = defaultBo(lg); accordionOpen("fixtureSection"); { const g = window.__tnMatchGen; await tnBlankHold(); if (g === window.__tnMatchGen && curLeague() === lg) loadFixtures(0); } /* no league = every tour */
 }
 
 /* ---------------- fixtures (UPCOMING ONLY) ---------------- */
@@ -3908,27 +3910,32 @@ async function loadFixtures(dayOffset) {
   g_fixtureDay = dayOffset;
   document.getElementById("fixturesTodayBtn").classList.toggle("active", dayOffset === 0);
   document.getElementById("fixturesTomorrowBtn").classList.toggle("active", dayOffset === 1);
-  const lg = curLeague(); const sel = document.getElementById("fixtureSelect"); if (!lg || !sel) return;
+  const lg = curLeague(); const sel = document.getElementById("fixtureSelect"); if (!sel) return;
   sel.innerHTML = '<option value="">Loading…</option>';
   const [s, e] = watDayBounds(dayOffset); const out = new Map(); const errs = [];
   try {
-    const d = await sportyTN("list?tids=" + encodeURIComponent(lg.tids.join(",")), 60000);
-    (Array.isArray(d) ? d : d.tournaments || []).forEach((t) => (t.events || []).forEach((ev) => {
+    const tids = lg ? lg.tids.slice() : [...new Set(Object.values(TN_LEAGUES).flatMap((l) => l.tids))]; const chunks = []; for (let i = 0; i < tids.length; i += 25) chunks.push(tids.slice(i, i + 25));
+    const parts = await Promise.all(chunks.map((ch) => sportyTN("list?tids=" + encodeURIComponent(ch.join(",")), 60000).catch((er) => { errs.push("SportyBet fixtures: " + er.message); return []; })));
+    parts.forEach((d) => (Array.isArray(d) ? d : (d && d.tournaments) || []).forEach((t) => (t.events || []).forEach((ev) => {
       const c = ev.sport && ev.sport.category; const nm = normLeagueName(c ? c.name + " - " + (c.tournament && c.tournament.name) : (t.categoryName + " - " + t.name));
-      if (nm !== lg.name || ev.estimateStartTime < s || ev.estimateStartTime >= e) return;
+      if ((lg && nm !== lg.name) || ev.estimateStartTime < s || ev.estimateStartTime >= e) return;
       if (Number(ev.status) !== 0 || ev.estimateStartTime <= Date.now() || /ended|closed|cancel|abandon|walkover|retired|set \d|live|break|interrupt/i.test(String(ev.matchStatus || "")) && !/not start/i.test(String(ev.matchStatus || ""))) return; /* UPCOMING ONLY: not started */
-      out.set(ev.eventId, { eventId: ev.eventId, home: ev.homeTeamName, away: ev.awayTeamName, hid: ev.homeTeamId, aid: ev.awayTeamId, start: ev.estimateStartTime, src: "SportyBet" });
-    }));
+      if (!lg && isDoubles(nm)) return; /* doubles are never modelled */
+      const lgi = lg || addLeague(null, nm, c && c.name); if (!lgi) return;
+      out.set(ev.eventId, { eventId: ev.eventId, home: ev.homeTeamName, away: ev.awayTeamName, hid: ev.homeTeamId, aid: ev.awayTeamId, start: ev.estimateStartTime, src: "SportyBet", lkey: lgi.key });
+    })));
   } catch (er) { errs.push("SportyBet fixtures: " + er.message); }
   AppState.fixtures = [...out.values()].sort((x, y) => x.start - y.start);
   sel.innerHTML = '<option value="">- Select match -</option>' + AppState.fixtures.map((f) => `<option value="${f.eventId}" data-home="${escapeHtml(f.home)}" data-away="${escapeHtml(f.away)}" data-event-date="${new Date(f.start).toISOString()}">${fmtT(f.start)} ${escapeHtml(f.home)} vs ${escapeHtml(f.away)}</option>`).join("");
-  const n = AppState.fixtures.length; const pe = errs.length ? " Partial: " + [...new Set(errs.map((x) => x.replace(/\(not JSON.*$/, "(blocked)")))].join("; ") : "";
+  if (!lg) renderLeagueOptions(); const n = AppState.fixtures.length; const pe = errs.length ? " Partial: " + [...new Set(errs.map((x) => x.replace(/\(not JSON.*$/, "(blocked)")))].join("; ") : "";
   if (n) fetchDone(`${n} upcoming match(es) ${dayOffset ? "tomorrow" : "today"} (WAT).` + pe, false); else fetchDone("No upcoming fixtures found (live/finished matches are hidden)." + pe, true);
 }
 function tnBlankHold() { return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 400)))); }
 async function onFixtureSelect() {
   const sel = document.getElementById("fixtureSelect"); const f = AppState.fixtures.find((x) => String(x.eventId) === String(sel.value));
-  clearInputs(); if (!f) return;
+  clearInputs(); if (!f) { tnSyncFetchBtn(); return; }
+  { const ls = document.getElementById("leagueSelect"); if (ls && f.lkey && TN_LEAGUES[f.lkey]) { if (!Array.from(ls.options).some((o) => o.value === f.lkey)) renderLeagueOptions(); ls.value = f.lkey; try { window.tnLeaguePicker && window.tnLeaguePicker.refresh && window.tnLeaguePicker.refresh(); } catch (_e) {} } }
+  tnSyncFetchBtn();
   AppState.fixture = f; AppState.bo = defaultBo(curLeague());
   setVal("teamAName", f.home); setVal("teamBName", f.away); relabel();
   accordionOpen("fixtureSection");
@@ -3938,6 +3945,7 @@ async function onFixtureSelect() {
   fetchSpin("Match selected. Fetching stats...");
   window.__bbFixtureFetchP = Promise.allSettled([withErrorBoundary(fetchStats, "fetchStats_pickFixture")(), (async () => { if (gen === window.__tnMatchGen) await withErrorBoundary(fetchLines, "fetchLines_pickFixture")(); })()]);
 }
+function tnSyncFetchBtn() { const b = document.getElementById("fetchBtn"); if (!b) return; const A = ((document.getElementById("teamAName") || {}).value || "").trim(), B = ((document.getElementById("teamBName") || {}).value || "").trim(); b.disabled = !(curLeague() && A && B); }
 function relabel() {
   const a = (document.getElementById("teamAName") || {}).value || "Player A", b = (document.getElementById("teamBName") || {}).value || "Player B";
   [["aGH2H", a, "home", "games"], ["bGH2H", b, "away", "games"], ["aSetH2H", a, "home", "sets"], ["bSetH2H", b, "away", "sets"]].forEach((x) => { const el = document.getElementById(x[0]); if (el) { el.placeholder = x[1] + " (" + x[2] + ") " + x[3] + " in H2H, newest first"; el.setAttribute("aria-label", el.placeholder); } });
@@ -3955,7 +3963,7 @@ async function loadH2H(f, A, B, HA, HB) {
 }
 async function fetchStats() {
   const lg = curLeague(); const A = document.getElementById("teamAName").value.trim(), B = document.getElementById("teamBName").value.trim();
-  if (!lg) return fetchDone("❌ Select a league first.", true);
+  if (!lg) return fetchDone("❌ Pick a match (or choose a league) first.", true);
   if (!A || !B || normName(A) === normName(B)) return fetchDone("❌ Enter two different players (Player A home, Player B away).", true);
   if (isDoubles(lg.name) || / \/ /.test(A + B)) return fetchDone("❌ Doubles are not modelled (no player history model, no SportyBet totals) → NO PLAY.", true);
   const btn = document.getElementById("fetchBtn"); btn.disabled = true; const _gen = window.__tnMatchGen || 0; const stale = () => (window.__tnMatchGen || 0) !== _gen;
@@ -3988,7 +3996,7 @@ async function fetchStats() {
     const errs = HA.errs.concat(HB.errs); const short = pa.length < TN_CONFIG.minGames || pb.length < TN_CONFIG.minGames;
     fetchDone((short ? "⚠️ FETCH INCOMPLETE: " + A + " has " + pa.length + ", " + B + " has " + pb.length + " matches (needs " + TN_CONFIG.minGames + " each) → NO PLAY. " : "✅ ") + `${A}: ${pa.length} matches (${HA.src.join(", ") || "none"}) • ${B}: ${pb.length} matches (${HB.src.join(", ") || "none"}) • H2H: ${h2.length}${h2.length ? " (used, shrunk n/(n+" + TN_CONFIG.h2hK + "))" : ""}` + (AppState.ratings && AppState.ratings.A && AppState.ratings.B ? " • Ratings " + AppState.ratings.A[0].toFixed(2) + " v " + AppState.ratings.B[0].toFixed(2) : " • Ratings: NaN (no opponent adjustment)") + (errs.length ? " • Partial: " + [...new Set(errs.map((x) => x.replace(/\(not JSON.*$/, "(blocked)")))].join("; ") : ""), short);
   } catch (e) { fetchDone("❌ Fetch failed: " + (e.message || e) + ". Tap Fetch Stats to retry.", true); }
-  finally { btn.disabled = false; }
+  finally { tnSyncFetchBtn(); }
 }
 
 /* ---------------- SportyBet lines: favourite (main) line flag only — prices are never read ---------------- */
@@ -4263,8 +4271,8 @@ function renderRows(table, rows, lg, nameA, nameB, L) {
     const isNo = p.pick === "NO PLAY"; const row = table.insertRow(); const isLock = !!(lock && lock.p === p); p.isLock = isLock;
     const td1 = document.createElement("td"); td1.textContent = p.name + (isFiniteVal(p.line) ? " " + p.line : ""); row.appendChild(td1);
     const td2 = document.createElement("td"); td2.textContent = fmt1(p.proj); row.appendChild(td2);
-    const td3 = document.createElement("td"); td3.textContent = isFiniteVal(p.edge) && isFiniteVal(p.line) ? (p.edge > 0 ? "+" : "") + (Math.round(p.edge * 10) / 10).toFixed(1) : "—"; row.appendChild(td3);
-    const td4 = document.createElement("td"); td4.className = isNo ? "conf-none" : "conf-" + p.grade.toLowerCase(); td4.textContent = isNo ? "—" : p.grade; row.appendChild(td4);
+    const td3 = document.createElement("td"); td3.textContent = isFiniteVal(p.edge) && isFiniteVal(p.line) ? (p.edge > 0 ? "+" : "") + (Math.round(p.edge * 10) / 10).toFixed(1) : "NaN"; row.appendChild(td3);
+    const td4 = document.createElement("td"); td4.className = isNo ? "conf-none" : "conf-" + p.grade.toLowerCase(); td4.textContent = isNo ? "NaN" : p.grade; row.appendChild(td4);
     const td5 = document.createElement("td"); td5.className = isNo ? "pred-noplay" : p.side === "UNDER" ? "pred-under" : "pred-over"; td5.style.whiteSpace = "nowrap"; td5.style.fontSize = "11px"; if (isNo || p.lean) td5.style.opacity = "0.85";
     const wrap = document.createElement("div"); wrap.style.display = "inline-block"; const sp = document.createElement("span"); sp.textContent = isNo ? "NO PLAY \u24d8" : p.pick; sp.style.cursor = "pointer";
     if (isLock) { const ls = document.createElement("span"); ls.className = "lock"; ls.textContent = "🔒"; sp.appendChild(document.createTextNode(" ")); sp.appendChild(ls); }
@@ -4724,12 +4732,13 @@ function boot() {
   document.querySelectorAll(".section").forEach((s) => { s.classList.add("collapsed"); s.classList.remove("locked"); });
   const ls = document.getElementById("leagueSelect"); ls.value = "";
   ls.addEventListener("change", onLeagueChange);
-  document.getElementById("fixtureSection").style.display = "none";
-  updateSectionLocks(); openSection("leagueSection");
+  document.getElementById("fixtureSection").style.display = "";
+  updateSectionLocks(); accordionOpen("fixtureSection"); tnSyncFetchBtn();
+  refreshLeagues().then(() => { if (!curLeague()) loadFixtures(0); }).catch(() => {}); /* homepage: today's matches from every tour, no league needed */
   document.getElementById("fixturesTodayBtn").addEventListener("click", () => loadFixtures(0));
   document.getElementById("fixturesTomorrowBtn").addEventListener("click", () => loadFixtures(1));
   document.getElementById("fixtureSelect").addEventListener("change", onFixtureSelect);
-  ["teamAName", "teamBName"].forEach((id) => document.getElementById(id).addEventListener("input", () => { AppState.fixture = null; relabel(); }));
+  ["teamAName", "teamBName"].forEach((id) => document.getElementById(id).addEventListener("input", () => { AppState.fixture = null; relabel(); tnSyncFetchBtn(); }));
   document.getElementById("fetchBtn").addEventListener("click", fetchStats);
   document.getElementById("runBtn").addEventListener("click", () => { try { runEngine(); } catch (e) { addIssue("runEngine crashed: " + e.message); engineDebug("runEngine crash", { e: e.stack }); } });
   document.getElementById("clearBtn").addEventListener("click", () => { /* Clear = full fresh-load state */ ls.value = ""; ls.dispatchEvent(new Event("change")); tnFreshRestore(); setEngineAlert(false); g_issues.length = 0; });
@@ -4851,7 +4860,7 @@ if (document.readyState === "loading") document.addEventListener("DOMContentLoad
     sel.addEventListener("change", label);
     var lastV = null; setInterval(function () { if (sel.value !== lastV) { lastV = sel.value; label(); } }, 700); /* programmatic value changes (restore, JSON import) */
     label();
-    window.tnLeaguePicker = { open: open, close: close, jump: jump };
+    window.tnLeaguePicker = { open: open, close: close, jump: jump, refresh: label };
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
@@ -5233,7 +5242,7 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
   function startMs(g) { var t = Date.parse(g && g.eventDate || ""); return isFinite(t) ? t : NaN; }
   function hasStarted(g) { var t = startMs(g); return isFinite(t) && t <= Date.now(); }
   function fmtTime(g) {
-    var t = startMs(g); if (!isFinite(t)) return "—";
+    var t = startMs(g); if (!isFinite(t)) return "NaN";
     try { if (typeof bbFmt12Time === "function") return bbFmt12Time(new Date(t)); } catch (e) {}
     var d = new Date(t), h = d.getHours(), m = String(d.getMinutes()).padStart(2, "0");
     return (h % 12 || 12) + ":" + m + (h >= 12 ? " PM" : " AM");
@@ -5801,18 +5810,18 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
   }
 
   function lineOf(b) {
-    if (!b) return "—";
+    if (!b) return "NaN";
     if (b.line != null && isFinite(Number(b.line))) return String(b.line);
     var t = String(b.pick || "");
     var m = t.match(/-?\d+(?:\.\d+)?/g);
-    return m && m.length ? m[m.length - 1] : "—";
+    return m && m.length ? m[m.length - 1] : "NaN";
   }
   function dirPick(b) {
     var t = String(b && b.pick || "").trim();
     var m = /^(OVER|UNDER)\b/i.exec(t);
     if (m) return m[1].toUpperCase();
     /* strip trailing line numbers for a short pick label */
-    return t.replace(/\s*-?\d+(?:\.\d+)?\s*$/, "").trim() || t || "—";
+    return t.replace(/\s*-?\d+(?:\.\d+)?\s*$/, "").trim() || t || "NaN";
   }
   function renderAllGames(dk, c) {
     var wrap = $("apAllWrap"); if (!wrap) return;
@@ -5873,7 +5882,7 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
           + "<td>" + esc(g.leagueLabel || g.league) + "</td>"
           + "<td>" + esc(g.home) + " vs " + esc(g.away) + "</td>"
           + '<td colspan="3" style="opacity:.65">' + st + (g.err ? " · " + esc(g.err) : "") + "</td>"
-          + "<td>—</td><td>—</td>"
+          + "<td>NaN</td><td>NaN</td>"
           + "</tr>";
       }
       var b = g.best;
@@ -5886,7 +5895,7 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
         + "<td>" + esc(marketLabel(b, g)) + "</td>"
         + "<td>" + esc(lineOf(b)) + "</td>"
         + "<td>" + esc(pickLabel(b)) + "</td>"
-        + "<td>" + esc(b.grade || "—") + "</td>"
+        + "<td>" + esc(b.grade || "NaN") + "</td>"
         + '<td class="apWin">' + Math.round(Number(b.win) * 100) + "%</td>"
         + "</tr>";
     }).join("");
@@ -5946,7 +5955,7 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
         + "<td>" + esc(g.leagueLabel || g.league) + "</td>"
         + "<td>" + esc(g.home) + " vs " + esc(g.away) + "</td>"
         + "<td>" + esc(marketLabel(b, g)) + '<span class="apMk">' + esc(pickLabel(b)) + "</span>" + bk + rx + "</td>"
-        + "<td>" + esc(b.grade || "—") + "</td>"
+        + "<td>" + esc(b.grade || "NaN") + "</td>"
         + '<td class="apWin">' + Math.round(cal.p * 100) + "%" + rawLine + "</td>"
         + "<td>" + oddsCell + "</td>"
         + "</tr>";
