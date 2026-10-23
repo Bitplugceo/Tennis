@@ -1,4 +1,3 @@
-S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3993,6 +3992,16 @@ async function fetchStats() {
 }
 
 /* ---------------- SportyBet lines: favourite (main) line flag only — prices are never read ---------------- */
+/* ODDS: same tolerant reader the basketball engine uses (outcome label first, then SportyBet ids 12 over / 13 under; suspended or inactive = no price) */
+function tnOutcomePrices(m) { const out = { over: null, under: null };
+  try { if (!m || (m.status != null && Number(m.status) !== 0)) return out; const arr = m.outcomes || m.outcomeList || m.selections; if (!Array.isArray(arr)) return out;
+    arr.forEach((o) => { if (!o || typeof o !== "object" || o.isActive === 0 || o.isActive === false || o.active === false) return;
+      const label = String(o.desc || o.description || o.name || o.label || "").toLowerCase(), id = String(o.id == null ? "" : o.id);
+      const side = /\bover\b/.test(label) ? "over" : /\bunder\b/.test(label) ? "under" : (id === "12" ? "over" : id === "13" ? "under" : "");
+      const raw = o.odds != null ? o.odds : (o.odd != null ? o.odd : (o.price != null ? o.price : o.decimalOdds)); const v = (typeof raw === "number" || (typeof raw === "string" && /^\s*\d+(\.\d+)?\s*$/.test(raw))) ? Number(raw) : NaN;
+      if (side && Number.isFinite(v) && v > 1 && v < 100) out[side] = v; }); } catch (_e) {}
+  return out; }
+function tnPricesFor(lines) { const out = {}; Object.keys(AppState.prices || {}).forEach((mk) => { if (isFiniteVal(lines[mk]) && AppState.autoLines && Math.abs(lines[mk] - AppState.autoLines[mk]) < 1e-9) out[mk] = AppState.prices[mk]; }); return out; } /* a typed/changed line never inherits the old price */
 function pickMainLine(markets, id) {
   const c = (markets || []).filter((m) => Number(m.id) === id && String(m.status == null ? 0 : m.status) === "0" && String(m.favourite) === "1" && /(^|\|)total=/.test(String(m.specifier || "")));
   const tot = c.length ? Number((String(c[0].specifier).match(/total=([\d.]+)/) || [])[1]) : NaNv;
@@ -4008,12 +4017,21 @@ async function fetchLines() {
   if (!ev) { marketStatus("Market lines: NaN — SportyBet fetch failed (" + errs.join("; ") + "). Re-select the match to retry, or type the lines.", true); return; }
   AppState.sportyEvent = ev;
   if (Number(ev.status) === 1) { marketStatus("Market lines: NaN — match already in play (" + (ev.setScore || "") + "): the model is prematch only → NO PLAY.", true); return; }
-  const got = {}; AppState.prices = {}; TN_MK_ORDER.forEach((mk) => { const r = pickMainLine(ev.markets, TN_MARKETS[mk].id); if (r) { got[mk] = r.line; const mm = (ev.markets || []).find((x) => Number(x.id) === TN_MARKETS[mk].id && String(x.favourite) === "1" && /(^|\|)total=/.test(String(x.specifier || ""))); const pr = {}; ((mm && mm.outcomes) || []).forEach((o) => { const d = String(o.desc || o.name || ""), od = Number(o.odds); if (od > 1) { if (/over/i.test(d)) pr.over = od; else if (/under/i.test(d)) pr.under = od; } }); if (pr.over || pr.under) AppState.prices[mk] = pr; } });
+  const got = {}; AppState.prices = {}; AppState.priceSrc = "none"; AppState.pricesAt = 0;
+  TN_MK_ORDER.forEach((mk) => { const r = pickMainLine(ev.markets, TN_MARKETS[mk].id); if (r) got[mk] = r.line; });
+  const tnTake = (markets, src) => { let n = 0; TN_MK_ORDER.forEach((mk) => { if (!isFiniteVal(got[mk]) || AppState.prices[mk]) return;
+    const mm = (markets || []).find((x) => Number(x.id) === TN_MARKETS[mk].id && /(^|\|)total=/.test(String(x.specifier || "")) && Number((String(x.specifier).match(/total=([\d.]+)/) || [])[1]) === got[mk]);
+    const pr = tnOutcomePrices(mm); if (pr.over || pr.under) { AppState.prices[mk] = pr; n++; } }); if (n) { AppState.priceSrc = src; AppState.pricesAt = Date.now(); } return n; };
+  window.__bbSportyRaw = ev; let nPx = tnTake(ev.markets, "tennis worker");
+  if (!nPx && Object.keys(got).length) { try { const j2 = await fetchJson("https://thebetceo-engine.ridwantunde636.workers.dev/sporty/event?id=" + encodeURIComponent(f.eventId), "Odds(fallback worker)", 120000, 12000);
+    if (AppState.fixture === f && j2 && j2.bizCode === 10000 && j2.data) { nPx = tnTake(j2.data.markets, "basketball worker"); if (nPx) window.__bbSportyRaw = j2.data; } } catch (_e) { /* fail-soft: default odds */ } }
+  if (AppState.fixture !== f) return;
+  const tnPxText = () => { const k = Object.keys(AppState.prices); return k.length ? " · Odds (" + AppState.priceSrc + "): " + k.map((m) => m + " " + (AppState.prices[m].over || "–") + "/" + (AppState.prices[m].under || "–")).join(", ") : " · Odds: not returned by the worker (1.87 default, EV is an estimate)"; };
   if (isFiniteVal(got.ts) && got.ts >= 3.5) { AppState.bo = 5; engineDebug("Best of 5 detected from the Total Sets line " + got.ts); }
   const ids = { tg: "tgMarket", ts: "tsMarket", pa: "paMarket", pb: "pbMarket" }; const filled = [], miss = [];
   TN_MK_ORDER.forEach((mk) => { if (isFiniteVal(got[mk])) { setVal(ids[mk], got[mk]); AppState.autoLines[mk] = got[mk]; filled.push(TN_MARKETS[mk].label + " " + got[mk]); } else miss.push(TN_MARKETS[mk].label); });
   setTag("mAutoTag", filled.length > 0);
-  marketStatus(filled.length ? "Market lines loaded from SportyBet: " + filled.join("; ") + (miss.length ? " · NaN (not offered): " + miss.join(", ") : "") + ". Check them, then Run." : "Market lines: NaN — SportyBet offers no Total Games / Total Sets / player games lines for this match (common for ITF, UTR and doubles).", !filled.length);
+  marketStatus(filled.length ? "Market lines loaded from SportyBet: " + filled.join("; ") + (miss.length ? " · NaN (not offered): " + miss.join(", ") : "") + ". Check them, then Run." + tnPxText() : "Market lines: NaN — SportyBet offers no Total Games / Total Sets / player games lines for this match (common for ITF, UTR and doubles).", !filled.length);
 }
 
 /* ---------------- model: one exact joint distribution P(games A, games B, sets) per match ----------------
@@ -4202,7 +4220,7 @@ function runEngine() {
   else {
     const model = computeModel(C, A, B, bo, mtbRateOf(lg), /qualif/i.test(lg.name));
     tnRefit();
-    TN_MK_ORDER.forEach((mk) => rows.push(Object.assign(evaluate(mk, C, model, lines[mk], { prices: AppState.prices || {} }), { model })));
+    TN_MK_ORDER.forEach((mk) => rows.push(Object.assign(evaluate(mk, C, model, lines[mk], { prices: tnPricesFor(lines) }), { model })));
     window.__tnLastModel = { league: lg.name, bo, model, C };
   }
   rows.forEach((p) => { if (p.marketKey === "pa") p.name = (nameA ? nameA.split(",")[0] : "Player A") + " Games"; if (p.marketKey === "pb") p.name = (nameB ? nameB.split(",")[0] : "Player B") + " Games"; });
