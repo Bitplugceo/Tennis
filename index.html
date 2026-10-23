@@ -1,3 +1,4 @@
+S
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3127,7 +3128,7 @@ body.dark-mode .tracker-analytics-section-head {
 
 
 
-  <div class="section" id="teamASection" style="display: none">
+  <div class="section" id="teamASection">
     <h3>Player A - Last 20 Overall <span class="autofill-indicator" id="aAutoTag">✅ Auto-filled</span><span class="autofill-indicator" id="aIntegrityTag" style="margin-left:4px"></span></h3>
 
     <div class="market-history-block">
@@ -3161,7 +3162,7 @@ body.dark-mode .tracker-analytics-section-head {
 
 
 
-  <div class="section" id="teamBSection" style="display: none">
+  <div class="section" id="teamBSection">
     <h3>Player B - Last 20 Overall <span class="autofill-indicator" id="bAutoTag">✅ Auto-filled</span><span class="autofill-indicator" id="bIntegrityTag" style="margin-left:4px"></span></h3>
 
     <div class="market-history-block">
@@ -3200,7 +3201,7 @@ body.dark-mode .tracker-analytics-section-head {
 
 
 
-  <div class="section" id="h2hSection" style="display: none">
+  <div class="section" id="h2hSection">
     <h3>
       H2H TEST
       <span class="autofill-indicator" id="h2hAutoTag"
@@ -3802,7 +3803,7 @@ async function loadPlayerHistory(name, compId) {
   const list = [...out.values()].filter((m) => m.self || normName(m.h) === k || normName(m.a) === k).sort((x, y) => y.t - x.t).slice(0, TN_CONFIG.lastN);
   return { list, errs, src };
 }
-function playerView(m, name) { const isH = m.self ? m.self === "h" : normName(m.h) === normName(name); return { won: isH ? m.sa : m.sb, lost: isH ? m.sb : m.sa, gW: m.sets.reduce((s, x, i) => s + (m.mtb && i === m.sets.length - 1 ? 0 : (isH ? x[0] : x[1])), 0), gL: m.sets.reduce((s, x, i) => s + (m.mtb && i === m.sets.length - 1 ? 0 : (isH ? x[1] : x[0])), 0), tb: m.tb, mtb: m.mtb ? 1 : 0, total: m.total, t: m.t, opp: isH ? m.a : m.h, m }; }
+function playerView(m, name) { const isH = m.self ? m.self === "h" : normName(m.h) === normName(name); return { won: isH ? m.sa : m.sb, lost: isH ? m.sb : m.sa, gW: m.sets.reduce((s, x, i) => s + (m.mtb && i === m.sets.length - 1 ? 0 : (isH ? x[0] : x[1])), 0), gL: m.sets.reduce((s, x, i) => s + (m.mtb && i === m.sets.length - 1 ? 0 : (isH ? x[1] : x[0])), 0), tb: m.tb, mtb: m.mtb ? 1 : 0, total: m.total, own: isH ? m.gA : m.gB, oppG: isH ? m.gB : m.gA, nsets: m.nsets, bo: m.bo, t: m.t, opp: isH ? m.a : m.h, m }; }
 
 /* ---------------- app state ---------------- */
 const AppState = { fixtures: [], fixture: null, bo: NaNv, h2h: null, lastFetch: null, sportyEvent: null, autoLines: {} };
@@ -3979,7 +3980,7 @@ async function fetchStats() {
     };
     fill("a", pa); fill("b", pb);
     const h2 = await loadH2H(f, A, B, HA, HB);
-    AppState.h2h = h2; AppState.hist = { A: HA.list.map((m) => Object.assign({ bo: m.bo, nsets: (m.sets || []).length, total: m.total }, playerView(m, A))), B: HB.list.map((m) => Object.assign({ bo: m.bo, nsets: (m.sets || []).length, total: m.total }, playerView(m, B))) };
+    AppState.h2h = h2; const tnBefore = (m) => !(f && isFiniteVal(Number(f.start))) || m.t < Number(f.start) - 600000; AppState.hist = { A: HA.list.filter(tnBefore).map((m) => playerView(m, A)), B: HB.list.filter(tnBefore).map((m) => playerView(m, B)) };
     setVal("aGH2H", h2.map((x) => x.gW).join(",")); setVal("bGH2H", h2.map((x) => x.gL).join(","));
     setVal("aSetH2H", h2.map((x) => x.won).join(",")); setVal("bSetH2H", h2.map((x) => x.lost).join(","));
     setTag("h2hAutoTag", h2.length > 0);
@@ -4127,14 +4128,14 @@ function effectiveFloor(C, mk) { if (!C || C.tier === "X") return null; const w 
 function tn710(mk, side, line) {
   const H = AppState.hist, bo = isFiniteVal(AppState.bo) ? AppState.bo : 3;
   if (!H || !H.A || !H.B) return { status: "UNAVAILABLE", reason: "7/10 unavailable: no match history loaded (press Fetch Stats)." };
-  const val = (m, who) => mk === "tg" ? m.total : mk === "ts" ? m.nsets : (mk === "pa" ? m.gW : m.gW);
+  const val = (m) => mk === "tg" ? m.total : mk === "ts" ? m.nsets : m.own;
   const one = (L, who) => { const s = L.filter((m) => m.bo === bo).slice(0, TN710.window).map((m) => val(m, who)); if (s.length < TN710.minValid) return { n: s.length, bad: true };
     let hits = 0, push = 0; s.forEach((v) => { if (v === line) push++; else if (side === "OVER" ? v > line : v < line) hits++; }); return { n: s.length, hits, push }; };
   const needA = mk !== "pb", needB = mk !== "pa"; const rA = needA ? one(H.A, "A") : null, rB = needB ? one(H.B, "B") : null;
   for (const [r, nm] of [[rA, "A"], [rB, "B"]]) if (r && r.bad) return { status: "UNAVAILABLE", reason: `7/10 unavailable: needs ${TN710.minValid} completed best-of-${bo} matches for player ${nm} (found ${r.n}).` };
   for (const [r, nm] of [[rA, "A"], [rB, "B"]]) if (r && r.hits < TN710.need) return { status: "VETO", reason: `7/10 gate: player ${nm} ${r.hits}/10 on ${side} ${line} (need ${TN710.need}).` };
   const h2 = (AppState.h2h || []).slice(0, TN710.window);
-  if (h2.length >= TN710.h2hMin && mk !== "ts") { const v = h2.map((m) => mk === "tg" ? m.gW + m.gL : mk === "pa" ? m.gW : m.gL); const opp = v.filter((x) => side === "OVER" ? x < line : x > line).length / v.length;
+  if (h2.length >= TN710.h2hMin && mk !== "ts") { const v = h2.map((m) => mk === "tg" ? m.total : mk === "pa" ? m.own : m.oppG); const opp = v.filter((x) => side === "OVER" ? x < line : x > line).length / v.length;
     if (opp >= TN710.h2hVeto) return { status: "VETO", reason: `7/10 gate: H2H vetoed (${Math.round(opp * 100)}% of ${v.length} meetings went the other way).` }; }
   return { status: "PASS", reason: `7/10 pass: ${rA ? "A " + rA.hits + "/10 " : ""}${rB ? "B " + rB.hits + "/10" : ""}` };
 }
@@ -4142,7 +4143,7 @@ function tn710(mk, side, line) {
 /* ===== v2: market gate, learning, Auto Parlay (all background; no input boxes) ===== */
 function tnGate(mk, side, line, mean) {
   const H = AppState.hist, bo = isFiniteVal(AppState.bo) ? AppState.bo : 3; if (!H || !H.A || !H.B) return { status: "OK", reason: "" };
-  const ser = (L) => L.filter((m) => m.bo === bo).slice(0, 20).map((m) => mk === "tg" ? m.total : mk === "ts" ? m.nsets : m.gW);
+  const ser = (L) => L.filter((m) => m.bo === bo).slice(0, 20).map((m) => mk === "tg" ? m.total : mk === "ts" ? m.nsets : m.own);
   const lists = mk === "pa" ? [["A", H.A]] : mk === "pb" ? [["B", H.B]] : [["A", H.A], ["B", H.B]]; const blocks = [], warns = [];
   lists.forEach(([nm, L]) => { const v = ser(L); const n = v.length; if (n < 10) return;
     const mu = v.reduce((a, b) => a + b, 0) / n, sd = Math.sqrt(v.reduce((a, b) => a + (b - mu) ** 2, 0) / n), srt = [...v].sort((a, b) => a - b), med = n % 2 ? srt[(n - 1) / 2] : (srt[n / 2 - 1] + srt[n / 2]) / 2;
@@ -4150,7 +4151,7 @@ function tnGate(mk, side, line, mean) {
     if (hit === 0) blocks.push(nm + ": never " + side + " " + line + " in last " + n); else if (hit < 0.45) blocks.push(nm + ": hit-rate " + Math.round(hit * 100) + "%"); else if (hit < 0.55) warns.push(nm + ": hit-rate " + Math.round(hit * 100) + "%");
     if (sd > 0) { const z = Math.abs(mean - med) / sd; if (z > 1.5) blocks.push(nm + ": projection " + z.toFixed(1) + " sd from median"); else if (z >= 1.0) warns.push(nm + ": projection " + z.toFixed(1) + " sd from median"); }
     if (mu > 0 && sd / mu > 0.45) warns.push(nm + ": high volatility"); if (line < srt[Math.floor(n * 0.1)] || line > srt[Math.ceil(n * 0.9) - 1]) warns.push(nm + ": line outside P10-P90 (bait)"); });
-  const h2 = AppState.h2h || []; if (mk !== "ts" && h2.length >= 2) { const v = h2.map((m) => mk === "tg" ? m.gW + m.gL : mk === "pa" ? m.gW : m.gL); const sup = v.filter((x) => side === "OVER" ? x > line : x < line).length / v.length; if (sup <= 0.4) blocks.push("H2H conflict (" + Math.round(sup * 100) + "% support of " + v.length + ")"); }
+  const h2 = AppState.h2h || []; if (mk !== "ts" && h2.length >= 2) { const v = h2.map((m) => mk === "tg" ? m.total : mk === "pa" ? m.own : m.oppG); const sup = v.filter((x) => side === "OVER" ? x > line : x < line).length / v.length; if (sup <= 0.4) blocks.push("H2H conflict (" + Math.round(sup * 100) + "% support of " + v.length + ")"); }
   return { status: blocks.length || warns.length >= 2 ? "BLOCK" : warns.length ? "WARNING" : "OK", reason: blocks.concat(warns).join("; ") };
 }
 function tnRefit() { const by = {}; (g_tracker.picks || []).forEach((p) => { if ((p.resultStatus === "win" || p.resultStatus === "loss") && !p.lean && isFiniteVal(p.pRaw) && p.pRaw > 0 && p.pRaw < 1) (by[p.cat + "|" + p.marketKey] = by[p.cat + "|" + p.marketKey] || []).push({ x: logit(p.pRaw), y: p.resultStatus === "win" ? 1 : 0 }); });
@@ -6219,6 +6220,14 @@ body.dark-mode #apAllTbl td.apSt-pending,html.dark-mode #apAllTbl td.apSt-pendin
   root.BBAutoParlay = { leagueTier: leagueTier, buildTrackRecord: buildTrackRecord, calibrate: calibrate, candKey: candKey, oddsKey: oddsKey, parlayText: parlayText, slipStats: slipStats, CAL: CAL, open: openPanel, isFullPlay: isFullPlay, bestOfGame: bestOfGame, selectParlay: selectParlay, selectParlayEx: selectParlayEx, oddsOf: oddsOf, pickLabel: pickLabel, marketLabel: marketLabel, renderParlay: function () { return renderParlay(); }, _t: { load: function () { S = load(); return S; }, state: function () { return S; }, runLoop: runLoop, ctx: ctx, predictOne: predictOne, discover: discover, pendingFor: pendingFor, dayKeyOf: dayKeyOf, clearAll: clearAll } };
   if (typeof document !== "undefined" && document.addEventListener) { if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init(); }
 })(typeof window !== "undefined" ? window : globalThis);
+</script>
+
+<script>
+/* Player A / B / H2H boxes are display-only: Fetch Stats fills them, the engine reads the same history in the background (AppState.hist). */
+(function () { function go() { ["teamASection", "teamBSection", "h2hSection"].forEach(function (id) { var sec = document.getElementById(id); if (!sec) return;
+    sec.querySelectorAll("input, textarea").forEach(function (el) { el.readOnly = true; });
+    if (sec.querySelector(".tn-ro-note")) return; var n = document.createElement("div"); n.className = "tn-ro-note"; n.style.cssText = "font-size:11px;opacity:.7;margin:2px 0 6px"; n.textContent = "Auto-filled · read-only · the 7/10 rule reads the newest 10 matches of the same format from this same history."; var h = sec.querySelector("h3"); if (h && h.nextSibling) h.parentNode.insertBefore(n, h.nextSibling); else sec.appendChild(n); }); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go); else go(); })();
 </script>
 </body>
 </html>
