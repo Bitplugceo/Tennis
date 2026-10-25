@@ -1,4 +1,3 @@
-X
 <!DOCTYPE html>
 <html lang="en">
 <!-- >> TN-HTML-0001 | <head> -->
@@ -6059,7 +6058,7 @@ function tnDeletePick(sig) {
    in localStorage + a rolling backup key + IndexedDB, and the worker restores anything that is lost; other tabs / resumed pages re-merge instead of
    overwriting; and a failed save shows a red warning in the header instead of failing silently. */
 const TN_TRACKER_BAK_KEY = "TN_TRACKER_V1_BAK", TN_TRACKER_CORRUPT_KEY = "TN_TRACKER_V1_CORRUPT", TN_IDB_NAME = "TN_TRACKER_IDB", TN_IDB_STORE = "snap";
-const g_tnPersist = { ok: true, lastOkAt: 0, lastErr: "", writes: 0, fails: 0, source: "", mergedIn: 0, idb: "pending", idbAt: 0, bakAt: 0, pull: { at: 0, ok: null, err: "" }, push: { at: 0, ok: null, err: "", failedRows: 0 } };
+const g_tnPersist = { ok: true, local: true, lastOkAt: 0, lastErr: "", writes: 0, fails: 0, source: "", mergedIn: 0, idb: "pending", idbAt: 0, bakAt: 0, pull: { at: 0, ok: null, err: "" }, push: { at: 0, ok: null, err: "", failedRows: 0 } };
 let g_tnFp = new Map(), g_tnIdbTimer = null, g_tnRetryTimer = null, g_tnLoadBusy = false;
 const tnGoodPick = (p) => !!p && typeof p === "object" && typeof p.signature === "string" && Number.isFinite(Number(p.eventDate)); /* same malformed-row rule as the locked #330 fix */
 const tnIsSettledStatus = (s) => /^(win|loss|push|void|lean-win|lean-loss|lean-push)$/.test(String(s || ""));
@@ -6091,24 +6090,26 @@ function tnTombReload() { try { const j = JSON.parse(localStorage.getItem(TN_TOM
 function tnParseSnap(str) { try { const j = JSON.parse(str || "null"); return j && Array.isArray(j.picks) ? j.picks.filter(tnGoodPick) : null; } catch (_e) { return null; } }
 function tnBadgeHtml() {
   const bits = [];
-  if (!g_tnPersist.ok) bits.push('<span id="trackerPersistBadge" style="color:#ff6b6b;font-weight:900;" title="' + escapeHtml(g_tnPersist.lastErr || "save failed") + '"> • ⚠ NOT SAVED ON THIS DEVICE (kept in memory, retrying)</span>');
   const unsynced = g_tracker.picks.filter((p) => !p.synced && p.eventId && p.resultStatus !== "superseded").length;
   if (unsynced && g_tnPersist.push.ok === false) bits.push('<span id="trackerSyncBadge" style="color:#ffcf73;font-weight:900;" title="' + escapeHtml(g_tnPersist.push.err || "") + '"> • ☁ ' + unsynced + " not backed up</span>");
   return bits.join("");
 }
 function tnPaintBadge() { try { const el = document.getElementById("trackerSummary"); if (!el) return; el.querySelectorAll("#trackerPersistBadge,#trackerSyncBadge").forEach((n) => n.remove()); const h = tnBadgeHtml(); if (h) el.insertAdjacentHTML("beforeend", h); } catch (_e) {} }
+async function tnVerifyIdb() { try { if (typeof indexedDB === "undefined") return false; await tnIdbWriteNow(); const db = await tnOpenIdb(); const rec = await new Promise((res, rej) => { const rq = db.transaction(TN_IDB_STORE, "readonly").objectStore(TN_IDB_STORE).get("main"); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => rej(rq.error); }); db.close(); if (!rec || !Array.isArray(rec.picks)) return false; const m = new Map(rec.picks.map((p) => [p.signature, p])); return g_tracker.picks.every((p) => { const o = m.get(p.signature); return !!o && tnFp(o) === tnFp(p); }); } catch (_e) { return false; } }
 function tnVerifyDisk() { /* does localStorage really hold every pick in memory, at the same state? */
   if (TN_TEST_MODE) return { ok: true, skipped: true };
   try { const d = tnParseSnap(localStorage.getItem(TRACKER_KEY)); if (!d) return { ok: false, why: "stored copy unreadable or missing", mem: g_tracker.picks.length };
     const m = new Map(d.map((p) => [p.signature, p])); let missing = 0, stale = 0; g_tracker.picks.forEach((p) => { const o = m.get(p.signature); if (!o) missing++; else if (tnFp(o) !== tnFp(p)) stale++; });
     return { ok: !missing && !stale, missing, stale, disk: d.length, mem: g_tracker.picks.length }; } catch (e) { return { ok: false, why: String((e && e.message) || e) }; }
 }
-function tnScheduleRetry() { if (g_tnRetryTimer) return; g_tnRetryTimer = setTimeout(() => { g_tnRetryTimer = null; if (!g_tnPersist.ok) trackerSave(); }, 20000); }
+function tnScheduleRetry() { if (g_tnRetryTimer) return; g_tnRetryTimer = setTimeout(() => { g_tnRetryTimer = null; if (!g_tnPersist.local) trackerSave(); }, 60000); }
 function tnOpenIdb() { return new Promise((res, rej) => { try { const r = indexedDB.open(TN_IDB_NAME, 1); r.onupgradeneeded = () => { try { r.result.createObjectStore(TN_IDB_STORE); } catch (_e) {} }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error || new Error("idb open failed")); r.onblocked = () => rej(new Error("idb blocked")); } catch (e) { rej(e); } }); }
+function tnIdbWriteNow() { /* writes the full list to IndexedDB; resolves true/false */
+  return (async () => { try { const db = await tnOpenIdb(); await new Promise((res, rej) => { const tx = db.transaction(TN_IDB_STORE, "readwrite"); tx.objectStore(TN_IDB_STORE).put({ savedAt: Date.now(), picks: JSON.parse(JSON.stringify(g_tracker.picks)), tombs: Object.assign({}, g_tnTomb) }, "main"); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error || new Error("idb write failed")); tx.onabort = () => rej(tx.error || new Error("idb aborted")); }); db.close(); g_tnPersist.idb = "ok"; g_tnPersist.idbAt = Date.now(); g_tnPersist.ok = true; return true; }
+    catch (e) { g_tnPersist.idb = "fail: " + String((e && e.message) || e); if (!g_tnPersist.local) g_tnPersist.ok = false; return false; } })();
+}
 function tnIdbSave() { /* second, independent copy (survives a cleared / full localStorage) */
-  if (TN_TEST_MODE || typeof indexedDB === "undefined") return; clearTimeout(g_tnIdbTimer);
-  g_tnIdbTimer = setTimeout(async () => { try { const db = await tnOpenIdb(); await new Promise((res, rej) => { const tx = db.transaction(TN_IDB_STORE, "readwrite"); tx.objectStore(TN_IDB_STORE).put({ savedAt: Date.now(), picks: JSON.parse(JSON.stringify(g_tracker.picks)), tombs: Object.assign({}, g_tnTomb) }, "main"); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error || new Error("idb write failed")); tx.onabort = () => rej(tx.error || new Error("idb aborted")); }); db.close(); g_tnPersist.idb = "ok"; g_tnPersist.idbAt = Date.now(); }
-    catch (e) { g_tnPersist.idb = "fail: " + String((e && e.message) || e); } }, 400);
+  if (TN_TEST_MODE || typeof indexedDB === "undefined") return; clearTimeout(g_tnIdbTimer); g_tnIdbTimer = setTimeout(() => { tnIdbWriteNow(); }, 150);
 }
 async function tnIdbHydrate() { /* restore anything the IndexedDB copy has that memory lacks (merge only) */
   if (TN_TEST_MODE) return 0; if (typeof indexedDB === "undefined") { g_tnPersist.idb = "unavailable"; return 0; }
@@ -6142,14 +6143,14 @@ function trackerSave() {
   tnSyncFp();
   const payload = JSON.stringify({ v: 2, savedAt: Date.now(), picks: g_tracker.picks });
   const write = () => { localStorage.setItem(TRACKER_KEY, payload); if (localStorage.getItem(TRACKER_KEY) !== payload) throw new Error("read-back mismatch (storage did not keep the write)"); };
-  try {
-    if (Date.now() - g_tnPersist.bakAt > 300000) { try { const prev = localStorage.getItem(TRACKER_KEY); if (prev && tnParseSnap(prev)) { localStorage.setItem(TN_TRACKER_BAK_KEY, prev); g_tnPersist.bakAt = Date.now(); } } catch (_e) {} } /* rolling backup of the previous good copy */
-    write(); g_tnPersist.ok = true; g_tnPersist.lastErr = ""; g_tnPersist.lastOkAt = Date.now(); g_tnPersist.writes++; window.__tnSaveFailures = 0;
-  } catch (e) {
-    let saved = false; try { localStorage.removeItem(TN_TRACKER_BAK_KEY); localStorage.removeItem(TN_TRACKER_CORRUPT_KEY); write(); saved = true; } catch (_e2) {} /* quota: free the extra copies and try once more */
-    if (saved) { g_tnPersist.ok = true; g_tnPersist.lastErr = ""; g_tnPersist.lastOkAt = Date.now(); g_tnPersist.writes++; window.__tnSaveFailures = 0; }
-    else { g_tnPersist.ok = false; g_tnPersist.fails++; g_tnPersist.lastErr = String((e && e.message) || e); window.__tnSaveFailures = (window.__tnSaveFailures || 0) + 1; addIssue("Tracker save failed: " + g_tnPersist.lastErr); tnScheduleRetry(); }
-  }
+  let localOk = false, err = "";
+  try { write(); localOk = true; } catch (e) { err = String((e && e.message) || e);
+    /* origin storage is shared by every page on bitplugceo.github.io: free only OUR OWN rebuildable copies, then try once more */
+    [TN_TRACKER_BAK_KEY, TN_TRACKER_CORRUPT_KEY, TN_THRESH_CACHE].forEach((k) => { try { localStorage.removeItem(k); } catch (_e) {} });
+    try { write(); localOk = true; err = ""; } catch (e2) { err = String((e2 && e2.message) || e2); } }
+  if (localOk) { try { localStorage.removeItem(TN_TRACKER_BAK_KEY); } catch (_e) {} g_tnPersist.lastOkAt = Date.now(); g_tnPersist.writes++; window.__tnSaveFailures = 0; }
+  else { g_tnPersist.fails++; window.__tnSaveFailures = (window.__tnSaveFailures || 0) + 1; if (g_tnPersist.local !== false) engineDebug("localStorage full - IndexedDB copy is the primary store now", { error: err }); tnScheduleRetry(); }
+  g_tnPersist.local = localOk; g_tnPersist.lastErr = localOk ? "" : err; g_tnPersist.ok = localOk || g_tnPersist.idb === "ok" || g_tnPersist.idb === "pending"; /* never an error page / alert: the list is safe as long as ONE durable copy took the write */
   tnIdbSave(); tnPaintBadge();
 }
 /* SECTION — core runtime, shared helpers and model math. */
@@ -6443,7 +6444,7 @@ async function triggerTrackerMilitaryRaid() {
       runStage("force-settle + live sync", async () => { const pb = countPending(); await pullWorkerPicks(); await Promise.all([autoSettle(true), pollLiveGameClocks()]); report.settledThisPass = Math.max(0, pb - countPending()); report.liveGamesSynced = g_liveGameStatus.size; }, 60000),
     ]);
     await runStage("archive sweep", () => { report.archivedThisPass = 0; }); /* one bucket: nothing to archive */
-    await runStage("force save (local + server)", async () => { trackerSave(); await syncPicksToWorker(); const v = tnVerifyDisk(); if (!v.ok) throw new Error("storage does not hold the current picks (" + JSON.stringify(v) + ") — kept in memory + IndexedDB, retrying"); }, 120000);
+    await runStage("force save (local + server)", async () => { trackerSave(); await syncPicksToWorker(); const v = tnVerifyDisk(); if (!v.ok && !(await tnVerifyIdb())) throw new Error("no durable copy holds the current picks (" + JSON.stringify(v) + ")"); }, 120000);
     await runStage("re-hydrate from server", async () => { if (!TN_TEST_MODE) { trackerLoad(); await tnIdbHydrate(); } }); /* [TN-PERSIST-V2] merge-only: memory can no longer be replaced by an older stored copy */
     await runStage("count consistency check", () => { const r = _rec(g_tracker.picks); const sumEl = document.getElementById("trackerSummaryCounts"); const shown = sumEl ? (sumEl.textContent.match(/(\d+) wins/) || [])[1] : null; if (shown != null && Number(shown) !== r.wins) report.desyncsRepaired.push({ before: { wins: Number(shown) }, after: { wins: r.wins } }); });
     await runStage("re-render", () => { renderTracker(); });
@@ -6744,7 +6745,7 @@ function healthHtml() {
     ${sec("Recent Win Rate Drift", lgName ? escapeHtml(lgName.toUpperCase()) : "NaN", mh ? `<div class="tracker-mini-stat-grid">${ms("All-Time Win Rate", pf(mh.all), mh.n + " settled picks")}${ms("Last 10 Win Rate", pf(mh.rec), "Drift: " + (mh.drift >= 0 ? "+" : "") + (mh.drift * 100).toFixed(1) + " pp")}</div>` : '<div class="tracker-empty-note">Select a league with 10+ settled picks to see drift status.</div>')}
     ${sec("Calibration Status", probs.length >= 20 ? "Last " + probs.length + " picks" : "Not yet available", isFinite(brier) ? `<div class="tracker-mini-stat-grid">${ms("Brier Score", brier.toFixed(4), "Lower is better (0 = perfect)")}${ms("Picks", probs.length, "with recorded win probability")}</div>` : '<div class="tracker-empty-note">Needs 20+ settled picks with recorded win probabilities before calibration metrics appear.</div>')}
     ${sec("Tracker Volume", "All leagues combined", `<div class="tracker-mini-stat-grid">${ms("Active Picks", all.filter((p) => p.resultStatus === "pending").length, all.length + " saved")}${ms("Settled", at.settled, at.wins + "W / " + at.losses + "L")}</div>`)}
-    ${sec("Tracker Persistence", g_tnPersist.ok ? "SAVED" : "NOT SAVING", (() => { const v = tnVerifyDisk(), t = (ms) => (ms ? escapeHtml(fmtDT(ms)) : "never"); return `<div class="tracker-mini-stat-grid">${ms("Local save", g_tnPersist.ok ? "OK" : "FAILING", g_tnPersist.ok ? "last " + t(g_tnPersist.lastOkAt) : escapeHtml(g_tnPersist.lastErr || ""))}${ms("Stored = memory", v.ok ? "YES" : "NO", v.ok ? v.mem + " picks" : escapeHtml(JSON.stringify(v)))}${ms("IndexedDB copy", escapeHtml(String(g_tnPersist.idb).slice(0, 14)), "last " + t(g_tnPersist.idbAt))}${ms("Worker pull", g_tnPersist.pull.ok === null ? "—" : g_tnPersist.pull.ok ? "OK" : "FAIL", t(g_tnPersist.pull.at) + (g_tnPersist.pull.err ? " · " + escapeHtml(g_tnPersist.pull.err) : ""))}${ms("Worker push", g_tnPersist.push.ok === null ? "—" : g_tnPersist.push.ok ? "OK" : "FAIL", t(g_tnPersist.push.at) + (g_tnPersist.push.err ? " · " + escapeHtml(g_tnPersist.push.err) : ""))}${ms("Merged in", g_tnPersist.mergedIn, "stale writes blocked / rows restored")}</div>`; })())}
+    ${sec("Tracker Persistence", g_tnPersist.ok ? "SAVED" : "AT RISK", (() => { const v = tnVerifyDisk(), t = (ms) => (ms ? escapeHtml(fmtDT(ms)) : "never"); return `<div class="tracker-mini-stat-grid">${ms("Local save", g_tnPersist.local ? "OK" : "FULL", g_tnPersist.local ? "last " + t(g_tnPersist.lastOkAt) : "browser storage is full - IndexedDB copy in use")}${ms("Stored = memory", v.ok ? "YES" : "NO", v.ok ? v.mem + " picks" : escapeHtml(JSON.stringify(v)))}${ms("IndexedDB copy", escapeHtml(String(g_tnPersist.idb).slice(0, 14)), "last " + t(g_tnPersist.idbAt))}${ms("Worker pull", g_tnPersist.pull.ok === null ? "—" : g_tnPersist.pull.ok ? "OK" : "FAIL", t(g_tnPersist.pull.at) + (g_tnPersist.pull.err ? " · " + escapeHtml(g_tnPersist.pull.err) : ""))}${ms("Worker push", g_tnPersist.push.ok === null ? "—" : g_tnPersist.push.ok ? "OK" : "FAIL", t(g_tnPersist.push.at) + (g_tnPersist.push.err ? " · " + escapeHtml(g_tnPersist.push.err) : ""))}${ms("Merged in", g_tnPersist.mergedIn, "stale writes blocked / rows restored")}</div>`; })())}
     ${sec("Last Threshold Pass", g_tnThresh && g_tnThresh.at ? escapeHtml(fmtDT(g_tnThresh.at)) : "Never synced", `<div class="tracker-empty-note">Thresholds are re-checked nightly by the tennis-engine worker (needs 50+ settled real-line picks per league/market; max ±0.5 per change; auto-rollback).</div>`)}</div>`;
 }
 /* >> TN-JS-0321 | function configPageHtml | 1 line */
@@ -6769,7 +6770,7 @@ function tnSortTracked(picks) {
   return picks.map((pick, index) => ({ pick, index, group: tnListGroup(pick), start: tnStartMs(pick), settled: Number(pick.settledAt) || Number(pick.finalAt) || tnStartMs(pick) || 0 }))
     .sort((a, b) => {
       if (a.group !== b.group) return a.group - b.group;
-      if (a.group === 2) return (b.settled - a.settled) || (a.index - b.index); /* settled: most recently settled first */
+      if (a.group === 2) { const av = Number.isFinite(a.start), bv = Number.isFinite(b.start); if (av !== bv) return av ? -1 : 1; if (av && bv && a.start !== b.start) return b.start - a.start; return (b.settled - a.settled) || (a.index - b.index); } /* settled: newest match (kickoff) first, so 10:10 PM sits above 9:00 PM; pending/live always stay above every settled row */
       const av = Number.isFinite(a.start), bv = Number.isFinite(b.start); if (av !== bv) return av ? -1 : 1; /* invalid kickoff time sinks to the bottom */
       if (av && bv && a.start !== b.start) return b.start - a.start; /* PENDING and LIVE: descending scheduled start, like basketball */
       return a.index - b.index;
